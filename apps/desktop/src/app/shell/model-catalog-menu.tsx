@@ -1,4 +1,4 @@
-import type { ModelOptionProvider, ModelOptionsResult } from '@hermes/shared'
+import type { ModelOptionProvider, ModelOptionsResult, ModelPricing } from '@hermes/shared'
 import { DEFAULT_REASONING_EFFORT } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
@@ -36,20 +36,6 @@ import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } fro
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
-
-// Format token count for display (e.g. 500000 → '500K', 1048576 → '1M').
-function formatContext(tokens?: number | null): string | null {
-  if (!tokens || tokens <= 0) return null
-  if (tokens >= 1_000_000) {
-    const v = tokens / 1_000_000
-    return `${Math.abs(v - Math.round(v)) < 0.05 ? Math.round(v) : v.toFixed(1)}M`
-  }
-  if (tokens >= 1_000) {
-    const v = tokens / 1_000
-    return `${Math.abs(v - Math.round(v)) < 0.05 ? Math.round(v) : v.toFixed(1)}K`
-  }
-  return String(tokens)
-}
 import { cn } from '@/lib/utils'
 import { $customModels, addCustomModel, customModelCandidate, withCustomModels } from '@/store/custom-models'
 import { $localModelsEnabled } from '@/store/local-models-flag'
@@ -75,6 +61,40 @@ import { $defaultReasoningEffort } from '@/store/session'
 import type { LocalModelLoadProgress, LocalRuntimeJob } from '@/types/hermes'
 
 import { type FastControl, ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
+
+// Format token count for display (e.g. 500000 → '500K', 1048576 → '1M').
+function formatContext(tokens?: number | null): string | null {
+  if (!tokens || tokens <= 0) {
+    return null
+  }
+
+  if (tokens >= 1_000_000) {
+    const v = tokens / 1_000_000
+
+    return `${Math.abs(v - Math.round(v)) < 0.05 ? Math.round(v) : v.toFixed(1)}M`
+  }
+
+  if (tokens >= 1_000) {
+    const v = tokens / 1_000
+
+    return `${Math.abs(v - Math.round(v)) < 0.05 ? Math.round(v) : v.toFixed(1)}K`
+  }
+
+  return String(tokens)
+}
+
+// Same rules as the model picker's ModelPrice: nothing when unpriced, 'free', else "in / out" $/Mtok.
+function priceLabelFor(price?: ModelPricing): string | null {
+  if (!price || (!price.input && !price.output)) {
+    return null
+  }
+
+  if (price.free) {
+    return 'free'
+  }
+
+  return `${price.input || '?'} / ${price.output || '?'}`
+}
 
 // Lets the host dropdown (model-pill, a kanban field trigger, …) hand the panel
 // a way to dismiss itself so clicking a model row commits + closes, while the
@@ -568,6 +588,8 @@ export function ModelCatalogMenu({
                     const isCurrent = activeId !== null
                     const { name, tag } = modelDisplayParts(family.id)
                     const caps = group.provider.capabilities?.[family.id]
+                    const ctx = formatContext(caps?.context_window)
+                    const priceLabel = priceLabelFor(group.provider.pricing?.[family.id])
 
                     // Managed local model loading into memory right now:
                     // real load percent, keyed by exact model id (remote
@@ -625,7 +647,7 @@ export function ModelCatalogMenu({
                           <span className="min-w-0 flex-1 truncate">
                             <HighlightMatches foldSeparators query={search} text={name} />
                             {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
-                            {(ctx || priceLabel) ? (
+                            {ctx || priceLabel ? (
                               <span
                                 className="ml-1.5 text-[0.58rem] tabular-nums text-(--ui-text-tertiary) opacity-80"
                                 title={[
@@ -635,7 +657,9 @@ export function ModelCatalogMenu({
                                     : priceLabel === 'free'
                                       ? 'free'
                                       : ''
-                                ].filter(Boolean).join(' · ')}
+                                ]
+                                  .filter(Boolean)
+                                  .join(' · ')}
                               >
                                 {ctx ? <span>{ctx}</span> : null}
                                 {ctx && priceLabel ? <span className="mx-0.5 opacity-50">·</span> : null}
