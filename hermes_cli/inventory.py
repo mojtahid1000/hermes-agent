@@ -315,23 +315,52 @@ def _reasoning_catalog_reader(slug: str):
 
 
 def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None) -> None:
-    """Attach ``{model: {fast, reasoning, ...}}`` per row. ``reasoning`` defaults True when the catalog is
-    silent (the dial is a no-op on models that ignore it; hiding it from a capable model is worse). A
-    serving aggregator's detail overrides models.dev (adds ``can_disable_reasoning``). ``supported_efforts``
-    is deliberately NOT forwarded — it under-reports levels that work."""
+    """Attach ``{model: {fast, reasoning, context_window, ...}}`` per row.
+    Also fills catalog price + context for non-Nous providers (apikey.fan etc.) from models.dev.
+    """
     from hermes_cli.models import model_supports_fast_mode
 
     try:
-        from agent.models_dev import get_model_capabilities
+        from agent.models_dev import get_model_capabilities, get_model_info
     except Exception:
         get_model_capabilities = None  # type: ignore[assignment]
+        get_model_info = None
+
+    def _catalog_context_window(model_id: str) -> int:
+        if get_model_info is None:
+            return 0
+        try:
+            info = get_model_info(model_id.split("/")[0] if "/" in model_id else "openrouter", model_id)
+            ctx = getattr(info, "context_window", None) or getattr(info, "context_length", None)
+            return int(ctx) if ctx else 0
+        except Exception:
+            return 0
+
+    def _fill_catalog_pricing(row: dict, models: list[str]) -> None:
+        pricing = row.setdefault("pricing", {})
+        for m in models:
+            if m in pricing:
+                continue
+            if get_model_info is None:
+                continue
+            try:
+                info = get_model_info(m.split("/")[0] if "/" in m else "openrouter", m)
+                if not info:
+                    continue
+                inp = getattr(info, "pricing", {}).get("input", 0) if hasattr(info, "pricing") else 0
+                out = getattr(info, "pricing", {}).get("output", 0) if hasattr(info, "pricing") else 0
+                if inp or out:
+                    pricing[m] = {"input": f"{inp}", "output": f"{out}", "free": False, "source": "models.dev"}
+            except Exception:
+                pass
 
     for row in rows:
         slug = row.get("slug") or ""
         caps: dict[str, dict[str, Any]] = {}
         read_reasoning_catalog = _reasoning_catalog_reader(slug.lower())
+        models = row.get("models") or []
 
-        for model in row.get("models") or []:
+        for model in models:
             reasoning = True
             if get_model_capabilities is not None and slug:
                 try:
@@ -341,7 +370,11 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
                 except Exception:
                     reasoning = True
 
-            entry: dict[str, Any] = {"fast": bool(model_supports_fast_mode(model)), "reasoning": reasoning}
+            entry: dict[str, Any] = {
+                "fast": bool(model_supports_fast_mode(model)),
+                "reasoning": reasoning,
+                "context_window": _catalog_context_window(model),
+            }
 
             if reasoning and read_reasoning_catalog is not None:
                 try:
@@ -349,8 +382,6 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
                 except Exception:
                     detail = None
                 if detail and not detail.get("supports_reasoning"):
-                    # Aggregator catalog beats models.dev for a route it serves: no reasoning param
-                    # means no reasoning controls, so no disable to describe either.
                     entry["reasoning"] = False
                 elif detail:
                     entry["can_disable_reasoning"] = not detail.get("mandatory")
@@ -358,6 +389,9 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
             caps[model] = entry
 
         row["capabilities"] = caps
+        # Fill catalog price for any row that did not get live pricing
+        if not row.get("pricing"):
+            _fill_catalog_pricing(row, models)
 
 
 # Newest N models per lab an aggregator row features by default (older tail behind search/show-all);

@@ -36,6 +36,20 @@ import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } fro
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
+
+// Format token count for display (e.g. 500000 → '500K', 1048576 → '1M').
+function formatContext(tokens?: number | null): string | null {
+  if (!tokens || tokens <= 0) return null
+  if (tokens >= 1_000_000) {
+    const v = tokens / 1_000_000
+    return `${Math.abs(v - Math.round(v)) < 0.05 ? Math.round(v) : v.toFixed(1)}M`
+  }
+  if (tokens >= 1_000) {
+    const v = tokens / 1_000
+    return `${Math.abs(v - Math.round(v)) < 0.05 ? Math.round(v) : v.toFixed(1)}K`
+  }
+  return String(tokens)
+}
 import { cn } from '@/lib/utils'
 import { $customModels, addCustomModel, customModelCandidate, withCustomModels } from '@/store/custom-models'
 import { $localModelsEnabled } from '@/store/local-models-flag'
@@ -611,6 +625,23 @@ export function ModelCatalogMenu({
                           <span className="min-w-0 flex-1 truncate">
                             <HighlightMatches foldSeparators query={search} text={name} />
                             {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
+                            {(ctx || priceLabel) ? (
+                              <span
+                                className="ml-1.5 text-[0.58rem] tabular-nums text-(--ui-text-tertiary) opacity-80"
+                                title={[
+                                  ctx ? `${ctx} context` : '',
+                                  priceLabel && priceLabel !== 'free'
+                                    ? `${priceLabel} per 1M tokens`
+                                    : priceLabel === 'free'
+                                      ? 'free'
+                                      : ''
+                                ].filter(Boolean).join(' · ')}
+                              >
+                                {ctx ? <span>{ctx}</span> : null}
+                                {ctx && priceLabel ? <span className="mx-0.5 opacity-50">·</span> : null}
+                                {priceLabel ? <span>{priceLabel}</span> : null}
+                              </span>
+                            ) : null}
                           </span>
                           {loadProgress ? (
                             <span
